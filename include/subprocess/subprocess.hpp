@@ -31,8 +31,8 @@ THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cstdlib>
 #include <filesystem>
-#include <functional>
 #include <initializer_list>
 #include <iterator>
 #include <list>
@@ -40,13 +40,10 @@ THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <new>
 #include <optional>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <system_error>
-#include <tuple>
 #include <type_traits>
 #include <unordered_set>
-#include <vector>
 
 extern "C"
 {
@@ -186,9 +183,9 @@ class shell_expander
 {
 public:
   explicit shell_expander(const std::string& s) { ::wordexp(s.c_str(), &parsed_args_, 0); }
-  shell_expander(const shell_expander&)     = default;
-  shell_expander(shell_expander&&) noexcept = default;
-  shell_expander& operator=(const shell_expander&) = default;
+  shell_expander(const shell_expander&)                = default;
+  shell_expander(shell_expander&&) noexcept            = default;
+  shell_expander& operator=(const shell_expander&)     = default;
   shell_expander& operator=(shell_expander&&) noexcept = default;
   ~shell_expander() { ::wordfree(&parsed_args_); }
 
@@ -215,9 +212,9 @@ class descriptor
 public:
   descriptor() = default;
   explicit descriptor(int fd) : fd_{fd} {}
-  descriptor(const descriptor&)     = default;
-  descriptor(descriptor&&) noexcept = default;
-  descriptor& operator=(const descriptor&) = default;
+  descriptor(const descriptor&)                = default;
+  descriptor(descriptor&&) noexcept            = default;
+  descriptor& operator=(const descriptor&)     = default;
   descriptor& operator=(descriptor&&) noexcept = default;
   virtual ~descriptor()                        = default;
 
@@ -252,12 +249,13 @@ public:
   /**
    * @brief Tear down the descriptor
    *
-   * close() is called by subprocess::execute() after the
+   * close(bool) is called by subprocess::execute() after the
    * process is spawned, but before waiting. This should
    * ideally be the place where you should tear down the constructs
    * that were required for process I/O.
+   * @param bool abandon indicates if work was abandoned, and if descriptors should be read.
    */
-  virtual void close() {}
+  virtual void close([[maybe_unused]] bool abandon) {}
 
 protected:
   int fd_{-1};
@@ -287,9 +285,9 @@ struct err_t
 {
 };
 
-static inline in_t in;
-static inline out_t out;
-static inline err_t err;
+[[maybe_unused]] static inline in_t in;
+[[maybe_unused]] static inline out_t out;
+[[maybe_unused]] static inline err_t err;
 
 /**
  * @brief A shorthand for describing a descriptor ptr
@@ -334,7 +332,7 @@ public:
    * @param input
    */
   virtual void write(std::string& input);
-  void close() override;
+  void close(bool) override;
   [[nodiscard]] bool closable() const override { return fd() >= 0; }
 };
 
@@ -356,7 +354,7 @@ inline void odescriptor::write(std::string& input)
   }
 }
 
-inline void odescriptor::close()
+inline void odescriptor::close(bool)
 {
   if (closable())
   {
@@ -381,11 +379,11 @@ public:
    * @return std::string Contents of fd
    */
   virtual std::string read();
-  void close() override;
+  void close(bool) override;
   [[nodiscard]] bool closable() const override { return fd() >= 0; }
 };
 
-inline void idescriptor::close()
+inline void idescriptor::close(bool)
 {
   if (closable())
   {
@@ -401,13 +399,13 @@ inline std::string idescriptor::read()
   static std::string output;
   output.clear();
   ssize_t len;
-  while ((len = ::read(fd(), buf.data(), 2048)) > 0)
+  while ((len = ::read(fd(), buf.data(), buf_size)) > 0)
   {
     output.append(buf.data(), len);
   }
   if (len < 0)
   {
-    exceptions::os_error{"read"};
+    throw exceptions::os_error{"read"};
   }
   return output;
 }
@@ -429,11 +427,11 @@ public:
       : path_{std::move(path)}, flags_{O_CLOEXEC | flags}, mode_{mode}
   {
   }
-  file_descriptor(const file_descriptor&)     = default;
-  file_descriptor(file_descriptor&&) noexcept = default;
-  file_descriptor& operator=(const file_descriptor&) = default;
+  file_descriptor(const file_descriptor&)                = default;
+  file_descriptor(file_descriptor&&) noexcept            = default;
+  file_descriptor& operator=(const file_descriptor&)     = default;
   file_descriptor& operator=(file_descriptor&&) noexcept = default;
-  ~file_descriptor() override { close(); }
+  ~file_descriptor() override { close(false); }
   void open() override;
 
 private:
@@ -575,7 +573,7 @@ class ovariable_descriptor : public opipe_descriptor
 public:
   explicit ovariable_descriptor(std::string& output_var) : output_{output_var} { linked_fd_ = &input_pipe_; }
 
-  void close() override;
+  void close(bool) override;
   virtual void read() { output_ = input_pipe_.read(); }
 
 private:
@@ -583,15 +581,18 @@ private:
   ipipe_descriptor input_pipe_;
 };
 
-inline void ovariable_descriptor::close()
+inline void ovariable_descriptor::close(bool abandon)
 {
   if (not closable())
   {
     return;
   }
-  opipe_descriptor::close();
-  read();
-  input_pipe_.close();
+  opipe_descriptor::close(abandon);
+  if (!abandon)
+  {
+    read();
+  }
+  input_pipe_.close(abandon);
   fd_ = -1;
 }
 class ivariable_descriptor : public ipipe_descriptor
@@ -618,7 +619,7 @@ inline void ivariable_descriptor::open()
   }
   ipipe_descriptor::open();
   write();
-  output_pipe_.close();
+  output_pipe_.close(false);
 }
 
 /**
@@ -715,9 +716,9 @@ public:
     posix_spawn_file_actions_init(&actions_);
     closed_fds_.reserve(3);
   }
-  posix_spawn_file_actions(const posix_spawn_file_actions&)     = default;
-  posix_spawn_file_actions(posix_spawn_file_actions&&) noexcept = default;
-  posix_spawn_file_actions& operator=(const posix_spawn_file_actions&) = default;
+  posix_spawn_file_actions(const posix_spawn_file_actions&)                = default;
+  posix_spawn_file_actions(posix_spawn_file_actions&&) noexcept            = default;
+  posix_spawn_file_actions& operator=(const posix_spawn_file_actions&)     = default;
   posix_spawn_file_actions& operator=(posix_spawn_file_actions&&) noexcept = default;
   ~posix_spawn_file_actions() { posix_spawn_file_actions_destroy(&actions_); }
 
@@ -765,19 +766,35 @@ private:
  */
 class posix_process
 {
-
 public:
   explicit posix_process(std::string cmd) : cmd_{std::move(cmd)} {}
-
   void execute();
 
   int wait();
+  bool running();
+  void kill()
+  {
+    if (pid_)
+    {
+      ::kill(*pid_, SIGKILL);
+      close_fds(true);
+    }
+  }
 
-  const descriptor& in() { return *stdin_fd_; }
+  descriptor& in() { return *stdin_fd_; }
 
-  const descriptor& out() { return *stdout_fd_; }
+  descriptor& out() { return *stdout_fd_; }
 
-  const descriptor& err() { return *stderr_fd_; }
+  descriptor& err() { return *stderr_fd_; }
+  const std::string& cmd() { return cmd_; }
+
+  void close_fds(bool abandon)
+  {
+    for (auto& fd : {stdin_fd_, stdout_fd_, stderr_fd_})
+    {
+      fd->close(abandon);
+    }
+  }
 
   void in(descriptor_ptr&& fd) { stdin_fd_ = std::move(fd); }
   void out(descriptor_ptr&& fd) { stdout_fd_ = std::move(fd); }
@@ -819,14 +836,11 @@ inline void posix_process::execute()
   process_fds(action, stderr_fd_, posix_util::standard_filenos::standard_error);
 
   int pid{};
-  if (int err{::posix_spawnp(&pid, sh.argv()[0], action.get(), nullptr, sh.argv(), nullptr)}; err != 0)
+  if (int err{::posix_spawnp(&pid, sh.argv()[0], action.get(), nullptr, sh.argv(), environ)}; err != 0)
   {
     throw exceptions::os_error{{"posix_spawnp:", sh.argv()[0]}, err};
   }
   pid_ = pid;
-  stdin_fd_->close();
-  stdout_fd_->close();
-  stderr_fd_->close();
 }
 
 /**
@@ -843,6 +857,25 @@ inline int posix_process::wait()
   int waitstatus{};
   ::waitpid(*(pid_), &waitstatus, 0);
   return WEXITSTATUS(waitstatus);
+}
+
+inline bool posix_process::running()
+{
+  if (not pid_)
+  {
+    return false;
+  }
+  int waitstatus{};
+  int changed = ::waitpid(*pid_, &waitstatus, WNOHANG);
+  if (changed == pid_)
+  {
+    if (WIFEXITED(waitstatus))
+    {
+      pid_.reset();
+      return false;
+    }
+  }
+  return true;
 }
 
 using process_t = posix_process;
@@ -886,6 +919,9 @@ public:
    */
   int run(std::nothrow_t /*unused*/);
 
+  std::list<process_t>& processes() { return processes_; };
+  const std::string& cmd() { return processes_.begin()->cmd(); }
+
   /**
    * @brief Chains a command object to the current one.
    *
@@ -923,6 +959,7 @@ inline int command::run(std::nothrow_t /*unused*/)
   for (auto& process : processes_)
   {
     waitstatus = process.wait();
+    process.close_fds(false);
   }
   return waitstatus;
 }
